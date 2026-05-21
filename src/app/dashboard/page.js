@@ -5,6 +5,7 @@ import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import Chart from 'chart.js/auto';
+import Tesseract from 'tesseract.js';
 import "./dashboard.css"; 
 
 const DEFAULT_DATA = {
@@ -19,7 +20,6 @@ const DEFAULT_DATA = {
 };
 
 export default function DashboardPage() {
-    // 1. STATE AUTENTIKASI & UI
     const [user, setUser] = useState(null);
     const [isDataLoaded, setIsDataLoaded] = useState(false);
     const [activeTab, setActiveTab] = useState("income");
@@ -28,24 +28,23 @@ export default function DashboardPage() {
     const [isIntelOpen, setIsIntelOpen] = useState(false);
     const [txFilter, setTxFilter] = useState("all");
 
-    // 2. STATE DATA INTI
     const [transactions, setTransactions] = useState([]);
     const [budgets, setBudgets] = useState([]);
     const [goals, setGoals] = useState([]);
     const [portfolios, setPortfolios] = useState([]);
     
-    // STATE LIVE MARKET
     const [livePrices, setLivePrices] = useState({});
     const [idrRate, setIdrRate] = useState(15800);
     const [isFetchingMarket, setIsFetchingMarket] = useState(false);
 
-    // 3. STATE FORM & MODAL
     const [txAmount, setTxAmount] = useState("");
     const [txCategory, setTxCategory] = useState("");
     const [txDesc, setTxDesc] = useState("");
     const [txDate, setTxDate] = useState("");
     
     const [aiInput, setAiInput] = useState("");
+    const [isOpticScanning, setIsOpticScanning] = useState(false);
+    const fileInputRef = useRef(null);
     
     const [isBudgetModalOpen, setIsBudgetModalOpen] = useState(false);
     const [newBudgetCat, setNewBudgetCat] = useState("");
@@ -62,21 +61,16 @@ export default function DashboardPage() {
 
     const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, message: "", onConfirm: null });
 
-    // REFS UNTUK CHART
     const budgetChartRef = useRef(null);
     const assetChartRef = useRef(null);
     const budgetChartInstance = useRef(null);
     const assetChartInstance = useRef(null);
 
-    // ==========================================
-    // SIKLUS HIDUP & FIREBASE SYNC
-    // ==========================================
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
             if (currentUser) {
                 setUser(currentUser);
                 await loadData(currentUser.uid);
-                
                 const now = new Date();
                 now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
                 setTxDate(now.toISOString().slice(0, 16));
@@ -114,16 +108,12 @@ export default function DashboardPage() {
         await setDoc(doc(db, "users", user.uid), payload);
     };
 
-    // ==========================================
-    // LIVE MARKET API FETCHING (KRIPTO & SAHAM)
-    // ==========================================
     useEffect(() => {
         let interval;
         const fetchMarketData = async () => {
             if (portfolios.length === 0) return;
             setIsFetchingMarket(true);
             try {
-                // Fetch Kurs USD/IDR
                 let currentIdrRate = idrRate;
                 try {
                     const rateReq = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
@@ -133,8 +123,6 @@ export default function DashboardPage() {
                 } catch (e) {}
 
                 const newPrices = { ...livePrices };
-                
-                // Fetch Harga Aset
                 for (let asset of portfolios) {
                     let sym = asset.symbol.toUpperCase();
                     try {
@@ -159,23 +147,17 @@ export default function DashboardPage() {
                     } catch (e) {}
                 }
                 setLivePrices(newPrices);
-            } catch (err) {
-                console.error("Market API Error:", err);
-            }
+            } catch (err) {}
             setIsFetchingMarket(false);
         };
 
         if (activeView === 'portfolio-view') {
             fetchMarketData();
-            interval = setInterval(fetchMarketData, 60000); // Sinkronisasi setiap 60 detik
+            interval = setInterval(fetchMarketData, 60000); 
         }
-
         return () => clearInterval(interval);
     }, [portfolios, activeView]);
 
-    // ==========================================
-    // KALKULASI MATEMATIKA
-    // ==========================================
     const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
     const totalExpense = transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
     const activeBalance = totalIncome - totalExpense;
@@ -185,30 +167,18 @@ export default function DashboardPage() {
     const incomeCategories = ["Pemasukan Gaji", "Pencairan Aset", "Pendapatan Sampingan", "Lain-lain"];
     const currentCategories = activeTab === 'income' ? incomeCategories : budgets.map(b => b.category);
 
-    // Kalkulasi Valuasi Aset
-    let totalAssetValuation = 0;
-    let totalAssetModal = 0;
-    let allocCrypto = 0;
-    let allocSaham = 0;
-
+    let totalAssetValuation = 0, totalAssetModal = 0, allocCrypto = 0, allocSaham = 0;
     portfolios.forEach(a => {
         const currentPrice = livePrices[a.symbol] || (a.buy / a.qty);
         const val = currentPrice * a.qty;
-        totalAssetValuation += val;
-        totalAssetModal += a.buy;
-        if (a.type === 'crypto') allocCrypto += val;
-        else allocSaham += val;
+        totalAssetValuation += val; totalAssetModal += a.buy;
+        if (a.type === 'crypto') allocCrypto += val; else allocSaham += val;
     });
-    
     const netProfitLoss = totalAssetValuation - totalAssetModal;
 
-    // ==========================================
-    // CHART.JS LIFECYCLE HANDLERS
-    // ==========================================
     useEffect(() => {
         if (activeView === 'dashboard-view' && budgetChartRef.current && isDataLoaded) {
             if (budgetChartInstance.current) budgetChartInstance.current.destroy();
-            
             const activeBudgets = budgets.map(b => {
                 const used = transactions.filter(t => t.type === 'expense' && t.category === b.category).reduce((acc, curr) => acc + curr.amount, 0);
                 return { ...b, used };
@@ -216,9 +186,9 @@ export default function DashboardPage() {
 
             budgetChartInstance.current = new Chart(budgetChartRef.current, {
                 type: 'doughnut',
-                data: {
-                    labels: activeBudgets.map(b => b.category),
-                    datasets: [{ data: activeBudgets.map(b => b.used), backgroundColor: activeBudgets.map(b => b.color), borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5 }]
+                data: { 
+                    labels: activeBudgets.map(b => b.category), 
+                    datasets: [{ data: activeBudgets.map(b => b.used), backgroundColor: activeBudgets.map(b => b.color), borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5 }] 
                 },
                 options: { responsive: true, maintainAspectRatio: false, cutout: '75%', plugins: { legend: { position: 'right', labels: { color: '#8b949e', usePointStyle: true, padding: 15, font: { family: "'Plus Jakarta Sans'", size: 11, weight: 'bold' } } } } }
             });
@@ -229,34 +199,103 @@ export default function DashboardPage() {
     useEffect(() => {
         if (activeView === 'portfolio-view' && assetChartRef.current && isDataLoaded) {
             if (assetChartInstance.current) assetChartInstance.current.destroy();
-            
             assetChartInstance.current = new Chart(assetChartRef.current, {
                 type: 'pie',
-                data: {
-                    labels: ['Aset Kripto', 'Aset Saham'],
-                    datasets: [{
-                        data: [allocCrypto, allocSaham],
-                        backgroundColor: ['#ff9100', '#00f0ff'],
-                        borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5
-                    }]
+                data: { 
+                    labels: ['Aset Kripto', 'Aset Saham'], 
+                    datasets: [{ data: [allocCrypto, allocSaham], backgroundColor: ['#ff9100', '#00f0ff'], borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5 }] 
                 },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { position: 'right', labels: { usePointStyle: true, padding: 10, color: '#8b949e', font: { weight: 'bold', size: 10, family: "'Plus Jakarta Sans'" } } } }
-                }
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { usePointStyle: true, padding: 10, color: '#8b949e', font: { weight: 'bold', size: 10, family: "'Plus Jakarta Sans'" } } } } }
             });
         }
         return () => { if (assetChartInstance.current) assetChartInstance.current.destroy(); }
     }, [allocCrypto, allocSaham, activeView, isDataLoaded]);
 
-    // ==========================================
-    // LOGIKA DATA & TRANSAKSI
-    // ==========================================
+    const extractTransactionData = (rawText) => {
+        let amount = 0;
+        const cleanText = rawText.toLowerCase().replace(/rp\s?/g, '').replace(/,/g, '.');
+        
+        const regexStandard = /(?<!\d)(\d{1,3}(?:\.\d{3})+)(?!\d)/; 
+        const regexJt = /(?<!\d)(\d+(?:\.\d+)?)\s*(jt|juta|m)\b/i;  
+        const regexK = /(?<!\d)(\d+(?:\.\d+)?)\s*(k|rb|ribu)\b/i;   
+        const regexPlain = /(?<!\d)(\d{4,})(?!\d)/;                 
+
+        if (regexStandard.test(cleanText)) {
+            amount = parseInt(cleanText.match(regexStandard)[1].replace(/\./g, ''));
+        } else if (regexJt.test(cleanText)) {
+            amount = parseFloat(cleanText.match(regexJt)[1]) * 1000000;
+        } else if (regexK.test(cleanText)) {
+            amount = parseFloat(cleanText.match(regexK)[1]) * 1000;
+        } else if (regexPlain.test(cleanText)) {
+            amount = parseInt(cleanText.match(regexPlain)[1]);
+        }
+
+        if (amount === 0) {
+            const nums = cleanText.match(/\d+/g);
+            if (nums) amount = Math.max(...nums.map(n => parseInt(n) || 0));
+        }
+
+        let type = "expense", cat = "Lain-lain";
+        const isIncome = /gaji|masuk|terima|profit|cair|topup|dapat|saku|jual|tarik/i.test(cleanText);
+        
+        if (isIncome) { 
+            type = 'income'; 
+            if (/emas|crypto|saham|aset|bitcoin|btc/i.test(cleanText)) {
+                cat = "Pencairan Aset";
+            } else {
+                cat = incomeCategories[0]; 
+            }
+        } else { 
+            if (/makan|minum|kopi|rokok|bensin|gojek|grab|indomaret|alfamart|superindo|warteg|resto|struk/i.test(cleanText)) {
+                cat = budgets.find(b => /pokok|makan|harian/i.test(b.category))?.category || budgets[0]?.category;
+            } else if (/listrik|air|wifi|internet|token|pajak|pln|pdam/i.test(cleanText)) {
+                cat = budgets.find(b => /tagihan|bulanan/i.test(b.category))?.category || budgets[2]?.category;
+            } else if (/kereta|tiket|pesawat|bus|tol|parkir/i.test(cleanText)) {
+                cat = budgets.find(b => /transportasi|jalan/i.test(b.category))?.category || budgets[1]?.category;
+            } else {
+                budgets.forEach(b => { if (new RegExp(b.category.split(" ")[0], "i").test(cleanText)) cat = b.category; }); 
+            }
+            if (!cat) cat = budgets[0]?.category || "Pengeluaran";
+        }
+
+        return { amount, type, category: cat };
+    };
+
+    const handleAIProcessing = async (e) => {
+        e.preventDefault();
+        if (!aiInput) return;
+        
+        const extracted = extractTransactionData(aiInput);
+        if (extracted.amount <= 0) return alert('Gagal membaca nominal angka. Coba tulis lebih jelas.');
+
+        let desc = aiInput.length > 30 ? aiInput.substring(0, 30) + '...' : aiInput;
+        desc = '[AI] ' + desc.replace(/\n/g, ' ');
+
+        const newTx = [{ id: Date.now(), type: extracted.type, amount: extracted.amount, category: extracted.category, description: desc, date: new Date().toISOString() }, ...transactions];
+        setTransactions(newTx);
+        setAiInput("");
+        await syncDataToFirebase(newTx, null, null, null);
+    };
+
+    const handleOpticScan = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setIsOpticScanning(true);
+        try {
+            const result = await Tesseract.recognize(file, 'ind+eng');
+            setAiInput(result.data.text.trim()); 
+        } catch (error) {
+            alert("Scanner gagal membaca gambar.");
+        }
+        setIsOpticScanning(false);
+        e.target.value = ""; 
+    };
+
     const handleAddTransaction = async (e) => {
         e.preventDefault();
         const amount = parseFloat(txAmount);
         if (amount <= 0 || !txCategory || !txDesc) return;
-
         const newTx = [{ id: Date.now(), type: activeTab, amount, category: txCategory, description: txDesc, date: txDate }, ...transactions];
         setTransactions(newTx);
         setTxAmount(""); setTxDesc("");
@@ -264,102 +303,56 @@ export default function DashboardPage() {
     };
 
     const handleDeleteTx = (id) => {
-        setConfirmDialog({
-            isOpen: true, message: "Hapus mutasi ini selamanya?",
-            onConfirm: async () => {
-                const newTx = transactions.filter(t => t.id !== id);
-                setTransactions(newTx);
-                await syncDataToFirebase(newTx, null, null, null);
-                setConfirmDialog({ isOpen: false, message: "", onConfirm: null });
-            }
-        });
+        setConfirmDialog({ isOpen: true, message: "Hapus mutasi ini selamanya?", onConfirm: async () => { const newTx = transactions.filter(t => t.id !== id); setTransactions(newTx); await syncDataToFirebase(newTx, null, null, null); setConfirmDialog({ isOpen: false, message: "", onConfirm: null }); } });
     };
 
     const handleAddBudget = async () => {
         if (!newBudgetCat || !newBudgetTarget) return;
         const colors = ['#00f0ff', '#ff2a2a', '#ff9100', '#10b981', '#bf00ff', '#e0e0e0'];
         const newB = [...budgets, { category: newBudgetCat, target: parseInt(newBudgetTarget), color: colors[Math.floor(Math.random() * colors.length)] }];
-        setBudgets(newB);
-        setNewBudgetCat(""); setNewBudgetTarget("");
-        await syncDataToFirebase(null, newB, null, null);
+        setBudgets(newB); setNewBudgetCat(""); setNewBudgetTarget(""); await syncDataToFirebase(null, newB, null, null);
     };
 
     const handleDeleteBudget = (categoryName) => {
-        setConfirmDialog({
-            isOpen: true, message: `Hapus limit untuk kategori '${categoryName}'?`,
-            onConfirm: async () => {
-                const newB = budgets.filter(b => b.category !== categoryName);
-                setBudgets(newB);
-                await syncDataToFirebase(null, newB, null, null);
-                setConfirmDialog({ isOpen: false, message: "", onConfirm: null });
-            }
-        });
+        setConfirmDialog({ isOpen: true, message: `Hapus limit untuk kategori '${categoryName}'?`, onConfirm: async () => { const newB = budgets.filter(b => b.category !== categoryName); setBudgets(newB); await syncDataToFirebase(null, newB, null, null); setConfirmDialog({ isOpen: false, message: "", onConfirm: null }); } });
     };
 
     const handleAddGoal = async (e) => {
-        e.preventDefault();
-        const newG = [...goals, { id: Date.now(), name: newGoalName, target: parseFloat(newGoalTarget), saved: 0 }];
-        setGoals(newG);
-        setNewGoalName(""); setNewGoalTarget("");
-        setIsGoalModalOpen(false);
+        e.preventDefault(); 
+        const newG = [...goals, { id: Date.now(), name: newGoalName, target: parseFloat(newGoalTarget), saved: 0 }]; 
+        setGoals(newG); setNewGoalName(""); setNewGoalTarget(""); setIsGoalModalOpen(false); 
         await syncDataToFirebase(null, null, newG, null);
     };
 
     const handleDeleteGoal = (id) => {
-        setConfirmDialog({
-            isOpen: true, message: "Hapus target ini dari sistem?",
-            onConfirm: async () => {
-                const newG = goals.filter(g => g.id !== id);
-                setGoals(newG);
-                await syncDataToFirebase(null, null, newG, null);
-                setConfirmDialog({ isOpen: false, message: "", onConfirm: null });
-            }
-        });
+        setConfirmDialog({ isOpen: true, message: "Hapus target ini dari sistem?", onConfirm: async () => { const newG = goals.filter(g => g.id !== id); setGoals(newG); await syncDataToFirebase(null, null, newG, null); setConfirmDialog({ isOpen: false, message: "", onConfirm: null }); } });
     };
 
     const injectGoalFund = async (id, name) => {
         const input = window.prompt(`Masukkan jumlah dana injeksi untuk [${name}]:`, "0");
-        if (input) {
-            const val = parseFloat(input);
-            if (val > 0) {
-                const newG = goals.map(g => g.id === id ? { ...g, saved: g.saved + val } : g);
-                setGoals(newG);
-                await syncDataToFirebase(null, null, newG, null);
-            }
+        if (input) { 
+            const val = parseFloat(input); 
+            if (val > 0) { 
+                const newG = goals.map(g => g.id === id ? { ...g, saved: g.saved + val } : g); 
+                setGoals(newG); 
+                await syncDataToFirebase(null, null, newG, null); 
+            } 
         }
     };
 
     const handleAddPortfolio = async (e) => {
-        e.preventDefault();
-        const newPortos = [...portfolios, { 
-            id: Date.now(), type: portoType, symbol: portoSymbol.toUpperCase(), qty: parseFloat(portoQty), buy: parseFloat(portoBuy) 
-        }];
-        setPortfolios(newPortos);
-        setPortoSymbol(""); setPortoQty(""); setPortoBuy("");
+        e.preventDefault(); 
+        const newPortos = [...portfolios, { id: Date.now(), type: portoType, symbol: portoSymbol.toUpperCase(), qty: parseFloat(portoQty), buy: parseFloat(portoBuy) }]; 
+        setPortfolios(newPortos); setPortoSymbol(""); setPortoQty(""); setPortoBuy(""); 
         await syncDataToFirebase(null, null, null, newPortos);
     };
 
     const handleDeletePortfolio = (id) => {
-        setConfirmDialog({
-            isOpen: true, message: "Putuskan sambungan radar untuk aset ini?",
-            onConfirm: async () => {
-                const newPortos = portfolios.filter(p => p.id !== id);
-                setPortfolios(newPortos);
-                await syncDataToFirebase(null, null, null, newPortos);
-                setConfirmDialog({ isOpen: false, message: "", onConfirm: null });
-            }
-        });
+        setConfirmDialog({ isOpen: true, message: "Putuskan sambungan radar untuk aset ini?", onConfirm: async () => { const newPortos = portfolios.filter(p => p.id !== id); setPortfolios(newPortos); await syncDataToFirebase(null, null, null, newPortos); setConfirmDialog({ isOpen: false, message: "", onConfirm: null }); } });
     };
 
-    // ==========================================
-    // TAMPILAN (RENDER)
-    // ==========================================
     if (!user || !isDataLoaded) {
-        return (
-            <div className="dashboard-body flex items-center justify-center">
-                <div className="text-blue font-mono text-xl blink-text font-bold uppercase">&gt; INITIALIZING SYSTEM DATABASE...</div>
-            </div>
-        );
+        return <div className="dashboard-body flex items-center justify-center"><div className="text-blue font-mono text-xl blink-text font-bold uppercase">&gt; INITIALIZING...</div></div>;
     }
 
     return (
@@ -367,38 +360,23 @@ export default function DashboardPage() {
             <div className="fluid-bg"></div>
 
             <div className="app-container">
-                {/* --- SIDEBAR --- */}
                 <aside className={`sidebar glass-card ${isSidebarOpen ? 'open' : 'slide-right'}`} id="main-sidebar">
-                    <button className="btn-icon-round bg-rose text-white mobile-only absolute-tr" onClick={() => setIsSidebarOpen(false)}><i className="fas fa-times"></i></button>
-                    
+                    <button className="btn-icon-round bg-rose text-white mobile-only absolute-tr" onClick={() => setIsSidebarOpen(false)}>
+                        <i className="fas fa-times"></i>
+                    </button>
                     <div className="brand">
                         <div className="brand-logo"><i className="fas fa-crosshairs"></i></div>
-                        <div className="brand-text">
-                            <h1>FINANSIAKU</h1>
-                            <span className="sys-status">SYS.SYNC_ONLINE</span>
-                        </div>
+                        <div className="brand-text"><h1>FINANSIAKU</h1><span className="sys-status">SYS.SYNC_ONLINE</span></div>
                     </div>
-
                     <ul className="nav-menu">
                         <li className="nav-label">COMMAND CENTER</li>
-                        <li>
-                            <button onClick={() => { setActiveView("dashboard-view"); setIsSidebarOpen(false); }} className={`w-full text-left nav-item ${activeView === "dashboard-view" ? "active" : ""}`}>
-                                <i className="fas fa-desktop"></i> Main Radar
-                            </button>
-                        </li>
-                        <li>
-                            <button onClick={() => { setActiveView("portfolio-view"); setIsSidebarOpen(false); }} className={`w-full text-left nav-item ${activeView === "portfolio-view" ? "active" : ""}`}>
-                                <i className="fas fa-satellite"></i> Asset Link <span className="badge bg-mint text-dark">LIVE</span>
-                            </button>
-                        </li>
+                        <li><button onClick={() => { setActiveView("dashboard-view"); setIsSidebarOpen(false); }} className={`w-full text-left nav-item ${activeView === "dashboard-view" ? "active" : ""}`}><i className="fas fa-desktop"></i> Main Radar</button></li>
+                        <li><button onClick={() => { setActiveView("portfolio-view"); setIsSidebarOpen(false); }} className={`w-full text-left nav-item ${activeView === "portfolio-view" ? "active" : ""}`}><i className="fas fa-satellite"></i> Asset Link <span className="badge bg-mint text-dark">LIVE</span></button></li>
                     </ul>
-                    
                     <div className="budget-panel">
                         <div className="panel-header d-flex justify-between align-center mb-2 border-b pb-2">
                             <span className="nav-label m-0 border-0">PROTOCOL LIMIT</span>
-                            <button onClick={() => setIsBudgetModalOpen(true)} className="btn-icon-round text-muted hover-bg-blue border-0" title="Atur Limit">
-                                <i className="fas fa-sliders-h"></i>
-                            </button>
+                            <button onClick={() => setIsBudgetModalOpen(true)} className="btn-icon-round text-muted hover-bg-blue border-0"><i className="fas fa-sliders-h"></i></button>
                         </div>
                         <ul className="scroll-y p-0 mt-2">
                             {budgets.map((b, i) => {
@@ -406,7 +384,6 @@ export default function DashboardPage() {
                                 const isOver = b.target > 0 && used > b.target;
                                 const color = isOver ? 'var(--rose)' : b.color;
                                 const pct = b.target === 0 ? 0 : Math.min((used / b.target) * 100, 100);
-                                
                                 return (
                                     <li key={i} className="budget-list-item" style={{ borderLeftColor: color }}>
                                         <div className="b-info d-flex flex-col gap-1 mb-2">
@@ -422,15 +399,13 @@ export default function DashboardPage() {
                             })}
                         </ul>
                     </div>
-
                     <div className="sidebar-bottom mt-3 pt-3 border-t">
-                        <button onClick={() => setConfirmDialog({ isOpen: true, message: "Kunci pangkalan data dan keluar?", onConfirm: () => signOut(auth) })} className="btn-action text-rose mt-2 hover-bg-rose hover-float">
-                            <i className="fas fa-power-off mr-2"></i> FORMAT SYSTEM
+                        <button onClick={() => setConfirmDialog({ isOpen: true, message: "Keluar dari sistem?", onConfirm: () => signOut(auth) })} className="btn-action text-rose mt-2 hover-bg-rose hover-float">
+                            <i className="fas fa-power-off mr-2"></i> LOGOUT
                         </button>
                     </div>
                 </aside>
 
-                {/* --- WORKSPACE --- */}
                 <main className="workspace fade-in">
                     <header className="header mb-4 d-flex justify-between align-center flex-wrap gap-3 stagger-1">
                         <div className="d-flex align-center gap-3">
@@ -441,45 +416,30 @@ export default function DashboardPage() {
                             </div>
                         </div>
                         <div className="d-flex align-center gap-3">
-                            <button onClick={() => setConfirmDialog({ isOpen: true, message: "Kunci pangkalan data dan keluar?", onConfirm: () => signOut(auth) })} className="btn-icon-round bg-rose text-white hover-float hide-on-mobile" title="Format System (Logout)">
-                                <i className="fas fa-power-off"></i>
-                            </button>
+                            <button onClick={() => setConfirmDialog({ isOpen: true, message: "Keluar dari sistem?", onConfirm: () => signOut(auth) })} className="btn-icon-round bg-rose text-white hover-float hide-on-mobile"><i className="fas fa-power-off"></i></button>
                         </div>
                     </header>
 
-                    {/* DASHBOARD VIEW */}
                     {activeView === "dashboard-view" && (
                         <div className="view-panel active">
                             <div className="grid-stats stagger-2">
                                 <div className="glass-card balance-card hover-float">
-                                    <div className="d-flex justify-between align-center mb-4">
-                                        <p className="stat-label text-blue">ACTIVE BALANCE</p>
-                                        <div className="icon-box text-blue"><i className="fas fa-hdd"></i></div>
-                                    </div>
+                                    <div className="d-flex justify-between align-center mb-4"><p className="stat-label text-blue">ACTIVE BALANCE</p><div className="icon-box text-blue"><i className="fas fa-hdd"></i></div></div>
                                     <h2 className="text-white text-4xl font-bold font-mono drop-shadow-blue">{formatRp(activeBalance)}</h2>
                                 </div>
                                 <div className="glass-card hover-float">
-                                    <div className="d-flex justify-between align-center mb-4">
-                                        <p className="stat-label">INCOMING FUNDS</p>
-                                        <div className="icon-box text-blue border-blue"><i className="fas fa-level-down-alt"></i></div>
-                                    </div>
+                                    <div className="d-flex justify-between align-center mb-4"><p className="stat-label">INCOMING FUNDS</p><div className="icon-box text-blue border-blue"><i className="fas fa-level-down-alt"></i></div></div>
                                     <h3 className="text-white text-2xl font-bold font-mono">{formatRp(totalIncome)}</h3>
                                 </div>
                                 <div className="glass-card hover-float">
-                                    <div className="d-flex justify-between align-center mb-4">
-                                        <p className="stat-label">FUNDS DEPLOYED</p>
-                                        <div className="icon-box text-rose border-rose"><i className="fas fa-level-up-alt"></i></div>
-                                    </div>
+                                    <div className="d-flex justify-between align-center mb-4"><p className="stat-label">FUNDS DEPLOYED</p><div className="icon-box text-rose border-rose"><i className="fas fa-level-up-alt"></i></div></div>
                                     <h3 className="text-white text-2xl font-bold font-mono">{formatRp(totalExpense)}</h3>
                                 </div>
                             </div>
 
                             <div className="grid-2 gap-4 mt-4 stagger-3 mobile-grid-1">
                                 <div className="glass-card d-flex align-center justify-between hover-float">
-                                    <div>
-                                        <h3 className="title-md text-white mb-1"><i className="fas fa-shield-alt text-blue mr-2"></i> System Health</h3>
-                                        <p className="text-xs text-muted uppercase">Retention Capacity Rate.</p>
-                                    </div>
+                                    <div><h3 className="title-md text-white mb-1"><i className="fas fa-shield-alt text-blue mr-2"></i> System Health</h3><p className="text-xs text-muted uppercase">Retention Capacity Rate.</p></div>
                                     <div className="radial-progress">
                                         <svg viewBox="0 0 100 100">
                                             <circle className="bg-circle" cx="50" cy="50" r="40"></circle>
@@ -489,13 +449,9 @@ export default function DashboardPage() {
                                     </div>
                                 </div>
                                 <div className="glass-card d-flex flex-col justify-center hover-float relative overflow-hidden">
-                                    <div className="insight-bg-glow"></div>
-                                    <h3 className="title-md text-white mb-2"><i className="fas fa-microchip text-yellow mr-2"></i> AI Tactical Insight</h3>
-                                    <p className="text-xs text-muted mb-2 uppercase">Burn Rate (Daily Average):</p>
+                                    <div className="insight-bg-glow"></div><h3 className="title-md text-white mb-2"><i className="fas fa-microchip text-yellow mr-2"></i> AI Tactical Insight</h3><p className="text-xs text-muted mb-2 uppercase">Burn Rate (Daily Average):</p>
                                     <h2 className="text-yellow text-2xl font-bold font-mono mb-1">{formatRp(totalExpense / (new Date().getDate() || 1))} / Hari</h2>
-                                    <p className={`text-xs uppercase font-bold ${healthRate >= 20 ? 'text-blue' : 'text-rose blink-text'}`}>
-                                        &gt; {healthRate >= 20 ? 'SYSTEM STABLE. EXPENSES OPTIMAL.' : 'WARNING: CRITICAL RETENTION.'}
-                                    </p>
+                                    <p className={`text-xs uppercase font-bold ${healthRate >= 20 ? 'text-blue' : 'text-rose blink-text'}`}>&gt; {healthRate >= 20 ? 'SYSTEM STABLE. EXPENSES OPTIMAL.' : 'WARNING: CRITICAL RETENTION.'}</p>
                                 </div>
                             </div>
 
@@ -505,40 +461,24 @@ export default function DashboardPage() {
                                         <button type="button" onClick={() => { setActiveTab("income"); setTxCategory(incomeCategories[0]); }} className={`tab-btn font-mono font-bold ${activeTab === "income" ? "active" : ""}`}>INJECT (+)</button>
                                         <button type="button" onClick={() => { setActiveTab("expense"); setTxCategory(budgets[0]?.category || ""); }} className={`tab-btn font-mono font-bold ${activeTab === "expense" ? "active" : ""}`}>DEPLOY (-)</button>
                                     </div>
-
                                     <form onSubmit={handleAddTransaction} className="flex-col gap-1">
-                                        <div className="form-group">
-                                            <label>TRANSFER AMOUNT (IDR)</label>
-                                            <input type="number" required placeholder="0" value={txAmount} onChange={(e) => setTxAmount(e.target.value)} className="input-lg font-bold text-white font-mono" />
-                                        </div>
+                                        <div className="form-group"><label>TRANSFER AMOUNT (IDR)</label><input type="number" required placeholder="0" value={txAmount} onChange={(e) => setTxAmount(e.target.value)} className="input-lg font-bold text-white font-mono" /></div>
                                         <div className="grid-2 gap-3 mb-3 mt-3 mobile-grid-1">
                                             <div className="form-group">
                                                 <label>CLASS / TYPE</label>
                                                 <select value={txCategory} onChange={(e) => setTxCategory(e.target.value)} required className="w-full p-3 bg-black text-white font-bold font-mono border border-gray-700 rounded" style={{ height: '48px' }}>
-                                                    <option value="" disabled>Pilih Kategori</option>
-                                                    {currentCategories.map((c, i) => <option key={i} value={c}>{c}</option>)}
+                                                    <option value="" disabled>Pilih Kategori</option>{currentCategories.map((c, i) => <option key={i} value={c}>{c}</option>)}
                                                 </select>
                                             </div>
-                                            <div className="form-group">
-                                                <label>LOG DETAIL</label>
-                                                <input type="text" required placeholder="Input Log..." value={txDesc} onChange={(e) => setTxDesc(e.target.value)} autoComplete="off" />
-                                            </div>
+                                            <div className="form-group"><label>LOG DETAIL</label><input type="text" required placeholder="Input Log..." value={txDesc} onChange={(e) => setTxDesc(e.target.value)} autoComplete="off" /></div>
                                         </div>
-                                        <div className="form-group">
-                                            <label>TIMESTAMP</label>
-                                            <input type="datetime-local" value={txDate} onChange={(e) => setTxDate(e.target.value)} required />
-                                        </div>
-                                        <button type="submit" className={`btn-main mt-4 w-full hover-float font-mono text-lg font-bold ${activeTab === "income" ? "bg-gradient-blue" : "bg-rose"}`}>
-                                            EXECUTE TRANSFER
-                                        </button>
+                                        <div className="form-group"><label>TIMESTAMP</label><input type="datetime-local" value={txDate} onChange={(e) => setTxDate(e.target.value)} required /></div>
+                                        <button type="submit" className={`btn-main mt-4 w-full hover-float font-mono text-lg font-bold ${activeTab === "income" ? "bg-gradient-blue" : "bg-rose"}`}>EXECUTE TRANSFER</button>
                                     </form>
                                 </div>
-
                                 <div className="glass-card flex-col">
                                     <h3 className="title-md mb-4 text-white"><i className="fas fa-radar mr-2 text-blue"></i> DEPLOYMENT MAP</h3>
-                                    <div className="chart-container flex-1 relative d-flex align-center justify-center font-mono text-muted">
-                                        <canvas ref={budgetChartRef}></canvas>
-                                    </div>
+                                    <div className="chart-container flex-1 relative d-flex align-center justify-center font-mono text-muted"><canvas ref={budgetChartRef}></canvas></div>
                                 </div>
                             </div>
 
@@ -547,9 +487,7 @@ export default function DashboardPage() {
                                     <h3 className="title-md text-white"><i className="fas fa-database mr-2 text-blue"></i> DATABASE LOGS</h3>
                                     <div className="custom-select-wrapper w-auto min-w-150">
                                         <select className="bg-black text-white p-2 border border-gray-700 font-mono text-xs uppercase rounded" value={txFilter} onChange={(e) => setTxFilter(e.target.value)}>
-                                            <option value="all">SEMUA DATA</option>
-                                            <option value="income">INJECT ONLY</option>
-                                            <option value="expense">DEPLOY ONLY</option>
+                                            <option value="all">SEMUA DATA</option><option value="income">INJECT ONLY</option><option value="expense">DEPLOY ONLY</option>
                                         </select>
                                     </div>
                                 </div>
@@ -566,59 +504,35 @@ export default function DashboardPage() {
                                             </div>
                                         </li>
                                     ))}
-                                    {transactions.length === 0 && (
-                                        <li className='justify-center flex-col text-center opacity-50 border-0 bg-transparent'>
-                                            <i className='fas fa-satellite-dish text-4xl mb-3 mt-4 text-blue'></i>
-                                            <span className='font-bold text-muted uppercase'>DATA KOSONG.</span>
-                                        </li>
-                                    )}
                                 </ul>
                             </div>
                         </div>
                     )}
 
-                    {/* ASSET LINK VIEW (PORTFOLIO) */}
                     {activeView === "portfolio-view" && (
                         <div className="view-panel active">
                             <div className="grid-main mobile-grid-1" style={{ marginTop: 0, marginBottom: '24px' }}>
                                 <div className="d-flex flex-col gap-4">
                                     <div className="glass-card balance-card h-full d-flex flex-col justify-center hover-float">
-                                        <div className="d-flex justify-between align-center mb-3">
-                                            <p className="stat-label text-blue">TOTAL ASSET VALUATION</p>
-                                            <i className="fas fa-cube text-blue opacity-50 text-xl"></i>
-                                        </div>
+                                        <div className="d-flex justify-between align-center mb-3"><p className="stat-label text-blue">TOTAL ASSET VALUATION</p></div>
                                         <h2 className="text-white text-4xl font-bold font-mono drop-shadow-blue">{formatRp(totalAssetValuation)}</h2>
                                     </div>
                                     <div className="glass-card h-full d-flex flex-col justify-center hover-float">
-                                        <div className="d-flex justify-between align-center mb-2">
-                                            <p className="stat-label">NET PROFIT / LOSS</p>
-                                        </div>
-                                        <h3 className={`text-3xl font-bold font-mono ${netProfitLoss >= 0 ? 'text-blue' : 'text-rose blink-text'}`}>
-                                            {netProfitLoss >= 0 ? '+ ' : '- '}{formatRp(Math.abs(netProfitLoss))}
-                                        </h3>
+                                        <div className="d-flex justify-between align-center mb-2"><p className="stat-label">NET PROFIT / LOSS</p></div>
+                                        <h3 className={`text-3xl font-bold font-mono ${netProfitLoss >= 0 ? 'text-blue' : 'text-rose blink-text'}`}>{netProfitLoss >= 0 ? '+ ' : '- '}{formatRp(Math.abs(netProfitLoss))}</h3>
                                     </div>
                                 </div>
-                                
                                 <div className="glass-card flex-col align-center justify-center hover-float">
                                     <h3 className="title-md mb-2 w-full text-center text-white">ASSET DISTRIBUTION</h3>
-                                    <div className="chart-container" style={{ position: 'relative', width: '100%', height: '200px' }}>
-                                        <canvas ref={assetChartRef}></canvas>
-                                    </div>
+                                    <div className="chart-container" style={{ position: 'relative', width: '100%', height: '200px' }}><canvas ref={assetChartRef}></canvas></div>
                                 </div>
                             </div>
-
                             <div className="glass-card mb-4 overflow-visible">
-                                <h3 className="title-md mb-4 text-white">
-                                    <i className="fas fa-link mr-2 text-yellow"></i> ESTABLISH NEW LINK 
-                                    {isFetchingMarket && <span className="ml-3 text-xs font-mono text-yellow blink-text"> [SCANNING APIs...]</span>}
-                                </h3>
+                                <h3 className="title-md mb-4 text-white"><i className="fas fa-link mr-2 text-yellow"></i> ESTABLISH NEW LINK</h3>
                                 <form onSubmit={handleAddPortfolio} className="d-flex flex-wrap gap-3 align-end">
                                     <div className="form-group flex-1 min-w-150 m-0 custom-select-wrapper">
                                          <label>SELECT MARKET</label>
-                                         <select value={portoType} onChange={(e) => setPortoType(e.target.value)} className="w-full p-3 bg-black text-white font-bold font-mono border border-gray-700 rounded" style={{ height: '48px' }}>
-                                            <option value="crypto">Crypto (USD)</option>
-                                            <option value="saham">Stocks (Yahoo)</option>
-                                         </select>
+                                         <select value={portoType} onChange={(e) => setPortoType(e.target.value)} className="w-full p-3 bg-black text-white font-bold font-mono border border-gray-700 rounded" style={{ height: '48px' }}><option value="crypto">Crypto (USD)</option><option value="saham">Stocks (Yahoo)</option></select>
                                     </div>
                                     <div className="form-group flex-1 min-w-150 m-0"><label>TICKER SYMBOL</label><input type="text" value={portoSymbol} onChange={(e)=>setPortoSymbol(e.target.value)} required placeholder="BTC..." className="uppercase font-bold font-mono" /></div>
                                     <div className="form-group flex-1 min-w-150 m-0"><label>VOLUME / QTY</label><input type="number" step="any" value={portoQty} onChange={(e)=>setPortoQty(e.target.value)} required placeholder="0.00" className="font-bold font-mono" /></div>
@@ -626,63 +540,65 @@ export default function DashboardPage() {
                                     <button type="submit" className="btn-main font-mono text-lg flex-shrink-0 hover-float" style={{ padding: '14px 24px', background: 'var(--blue)', color: '#000', border: 'none' }}>LINK</button>
                                 </form>
                             </div>
-                            
                             <div className="glass-card p-0 overflow-visible">
-                                <div className="p-4 border-b"><h3 className="title-md text-white"><i className="fas fa-satellite-dish mr-2 text-blue"></i> ACTIVE RADAR LIST</h3></div>
                                 <ul className="data-list p-3 max-h-400 scroll-y">
-                                    {portfolios.length === 0 ? (
-                                        <li className='justify-center flex-col text-center opacity-50 border-0 bg-transparent font-bold uppercase'>Radar Aset Kosong.</li>
-                                    ) : (
-                                        portfolios.map((a, i) => {
-                                           const currentPrice = livePrices[a.symbol] || (a.buy / a.qty);
-                                           const val = currentPrice * a.qty;
-                                           const profit = val - a.buy;
-                                           const pct = a.buy > 0 ? ((profit / a.buy) * 100).toFixed(2) : 0;
-                                           
-                                           return (
-                                               <li key={a.id || i} style={{ borderLeft: `3px solid ${profit >= 0 ? 'var(--blue)' : 'var(--rose)'}` }}>
-                                                   <div className="d-flex align-center">
-                                                       <div className="icon-box bg-glass mr-3"><i className={`${a.type === "crypto" ? "fab fa-bitcoin text-yellow" : "fas fa-building text-blue"}`}></i></div>
-                                                       <div><h4 className="mb-1 tx-title font-bold uppercase">{a.symbol} <span className="text-muted text-sm ml-1 font-mono">[QTY: {a.qty}]</span></h4><span className="text-muted text-xs font-mono uppercase">Modal: {formatRp(a.buy)}</span></div>
-                                                   </div>
-                                                   <div className="text-right d-flex align-center">
-                                                       <div className="mr-2 text-right">
-                                                            <h3 className={`font-mono mb-1 font-bold ${profit >= 0 ? 'text-blue' : 'text-rose'}`}>{formatRp(val)}</h3>
-                                                            <span className="badge font-bold" style={{ background: profit >= 0 ? 'rgba(0, 240, 255, 0.1)' : 'rgba(255, 42, 42, 0.1)', color: profit >= 0 ? 'var(--blue)' : 'var(--rose)' }}>{profit >= 0 ? '+' : ''}{pct}%</span>
-                                                       </div> 
-                                                       <button onClick={() => handleDeletePortfolio(a.id)} className="btn-icon-small border-0 hover-bg-rose ml-2 text-muted"><i className="fas fa-trash"></i></button>
-                                                   </div>
-                                               </li>
-                                           );
-                                        })
-                                    )}
+                                    {portfolios.map((a, i) => {
+                                        const currentPrice = livePrices[a.symbol] || (a.buy / a.qty);
+                                        const val = currentPrice * a.qty;
+                                        const profit = val - a.buy;
+                                        const pct = a.buy > 0 ? ((profit / a.buy) * 100).toFixed(2) : 0;
+                                        return (
+                                            <li key={a.id || i} style={{ borderLeft: `3px solid ${profit >= 0 ? 'var(--blue)' : 'var(--rose)'}` }}>
+                                                <div className="d-flex align-center">
+                                                    <div className="icon-box bg-glass mr-3"><i className={`${a.type === "crypto" ? "fab fa-bitcoin text-yellow" : "fas fa-building text-blue"}`}></i></div>
+                                                    <div>
+                                                        <h4 className="mb-1 tx-title font-bold uppercase">{a.symbol} <span className="text-muted text-sm ml-1 font-mono">[QTY: {a.qty}]</span></h4>
+                                                        <span className="text-muted text-xs font-mono uppercase">Modal: {formatRp(a.buy)}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right d-flex align-center">
+                                                    <div className="mr-2 text-right">
+                                                        <h3 className={`font-mono mb-1 font-bold ${profit >= 0 ? 'text-blue' : 'text-rose'}`}>{formatRp(val)}</h3>
+                                                        <span className="badge font-bold" style={{ background: profit >= 0 ? 'rgba(0, 240, 255, 0.1)' : 'rgba(255, 42, 42, 0.1)', color: profit >= 0 ? 'var(--blue)' : 'var(--rose)' }}>{profit >= 0 ? '+' : ''}{pct}%</span>
+                                                    </div> 
+                                                    <button onClick={() => handleDeletePortfolio(a.id)} className="btn-icon-small border-0 hover-bg-rose ml-2 text-muted"><i className="fas fa-trash"></i></button>
+                                                </div>
+                                            </li>
+                                        );
+                                    })}
                                 </ul>
                             </div>
                         </div>
                     )}
                 </main>
 
-                {/* --- INTEL PANEL --- */}
                 <aside className={`intel-panel ${isIntelOpen ? 'open' : 'slide-left'}`}>
                     <button className="btn-icon-round bg-rose text-white mobile-only absolute-tr" onClick={() => setIsIntelOpen(false)}><i className="fas fa-times"></i></button>
                     
                     <div className="intel-section mb-4 mt-2">
                         <div className="d-flex align-center gap-3 mb-4">
                             <div className="icon-box border-blue text-blue blink-text"><i className="fas fa-network-wired"></i></div>
-                            <h3 className="title-md text-white m-0">NLP MODULE</h3>
+                            <h3 className="title-md text-white m-0">TACTICAL NLP & OCR</h3>
                         </div>
-                        <form onSubmit={(e) => {
-                            e.preventDefault();
-                            if(!aiInput) return;
-                            const newTx = [{ id: Date.now(), type: 'expense', amount: 50000, category: budgets[0]?.category || "Umum", description: '[NLP] ' + aiInput, date: txDate }, ...transactions];
-                            setTransactions(newTx);
-                            setAiInput("");
-                            syncDataToFirebase(newTx, null, null, null);
-                        }} className="flex-col gap-3">
-                            <input type="text" value={aiInput} onChange={(e) => setAiInput(e.target.value)} placeholder=">> Input text prompt..." autoComplete="off" className="w-full font-mono" />
+                        
+                        <form onSubmit={handleAIProcessing} className="flex-col gap-3">
+                            <textarea 
+                                value={aiInput} 
+                                onChange={(e) => setAiInput(e.target.value)} 
+                                placeholder={isOpticScanning ? ">> SCANNING IN PROGRESS..." : ">> Ketik log 'Jual emas 500k' atau upload struk..."} 
+                                className="w-full font-mono bg-black text-white p-3 border border-gray-700 rounded"
+                                rows="3"
+                                disabled={isOpticScanning}
+                            />
+                            
+                            <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleOpticScan} />
+
                             <div className="d-flex gap-2">
-                                <button type="submit" className="btn-action text-center m-0 flex-1 hover-float uppercase bg-gradient-blue text-white font-bold border-0">
-                                    <i className="fas fa-paper-plane mb-1"></i><br /><span className="text-xs">PROCESS</span>
+                                <button type="button" onClick={() => fileInputRef.current.click()} disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase border border-yellow text-yellow hover-bg-yellow">
+                                    {isOpticScanning ? <i className="fas fa-circle-notch fa-spin mb-1"></i> : <i className="fas fa-camera mb-1"></i>}<br /><span className="text-xs">{isOpticScanning ? 'SCANNING...' : 'OPTIC SCAN'}</span>
+                                </button>
+                                <button type="submit" disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase bg-gradient-blue text-white font-bold border-0">
+                                    <i className="fas fa-paper-plane mb-1"></i><br /><span className="text-xs">PROCESS NLP</span>
                                 </button>
                             </div>
                         </form>
@@ -691,26 +607,14 @@ export default function DashboardPage() {
                     <hr className="intel-divider" />
 
                     <div className="intel-section flex-1 d-flex flex-col">
-                        <div className="d-flex justify-between align-center mb-4">
-                            <h3 className="title-md text-white m-0"><i className="fas fa-star text-yellow mr-2"></i> OBJECTIVES</h3>
-                            <button onClick={() => setIsGoalModalOpen(true)} className="btn-icon-small border-yellow text-yellow hover-bg-blue" title="New Objective"><i className="fas fa-plus"></i></button>
-                        </div>
+                        <div className="d-flex justify-between align-center mb-4"><h3 className="title-md text-white m-0"><i className="fas fa-star text-yellow mr-2"></i> OBJECTIVES</h3><button onClick={() => setIsGoalModalOpen(true)} className="btn-icon-small border-yellow text-yellow hover-bg-blue"><i className="fas fa-plus"></i></button></div>
                         <ul className="data-list scroll-y flex-1 p-0 border-0 bg-transparent shadow-none" style={{ margin: '0 -10px', padding: '0 10px' }}>
                             {goals.map(g => {
                                 const pct = Math.min((g.saved / g.target) * 100, 100);
                                 return (
                                     <li key={g.id} className="goal-item" style={{ display: 'block' }}>
-                                        <div className="d-flex justify-between align-start mb-2 gap-2">
-                                            <h4 className="text-white font-bold uppercase text-sm flex-1 word-break m-0">{g.name}</h4>
-                                            <div className="d-flex gap-2 flex-shrink-0">
-                                                <button onClick={() => injectGoalFund(g.id, g.name)} className="btn-icon-small text-blue hover-bg-blue"><i className="fas fa-plus"></i></button>
-                                                <button onClick={() => handleDeleteGoal(g.id)} className="btn-icon-small text-muted hover-bg-rose"><i className="fas fa-trash"></i></button>
-                                            </div>
-                                        </div>
-                                        <div className="d-flex flex-col gap-1 text-xs font-mono mb-2 mt-2 w-full">
-                                            <div className="d-flex justify-between"><span className="text-muted">TERKUMPUL:</span><span className="text-blue font-bold">{formatRp(g.saved)}</span></div>
-                                            <div className="d-flex justify-between"><span className="text-muted">TARGET:</span><span className="text-white">{formatRp(g.target)}</span></div>
-                                        </div>
+                                        <div className="d-flex justify-between align-start mb-2 gap-2"><h4 className="text-white font-bold uppercase text-sm flex-1 word-break m-0">{g.name}</h4><div className="d-flex gap-2 flex-shrink-0"><button onClick={() => injectGoalFund(g.id, g.name)} className="btn-icon-small text-blue hover-bg-blue"><i className="fas fa-plus"></i></button><button onClick={() => handleDeleteGoal(g.id)} className="btn-icon-small text-muted hover-bg-rose"><i className="fas fa-trash"></i></button></div></div>
+                                        <div className="d-flex flex-col gap-1 text-xs font-mono mb-2 mt-2 w-full"><div className="d-flex justify-between"><span className="text-muted">TERKUMPUL:</span><span className="text-blue font-bold">{formatRp(g.saved)}</span></div><div className="d-flex justify-between"><span className="text-muted">TARGET:</span><span className="text-white">{formatRp(g.target)}</span></div></div>
                                         <div className="progress-bg"><div className="progress-bar" style={{ width: `${pct}%`, background: 'var(--yellow)', boxShadow: '0 0 10px rgba(255, 145, 0, 0.5)' }}></div></div>
                                     </li>
                                 );
@@ -719,74 +623,34 @@ export default function DashboardPage() {
                     </div>
                 </aside>
             </div>
-
+            
             <button className="mobile-fab" onClick={() => setIsIntelOpen(true)}><i className="fas fa-network-wired text-xl text-black"></i></button>
 
-            {/* --- MODAL CONFIRM --- */}
             {confirmDialog.isOpen && (
                 <div className="modal-wrapper" style={{ display: 'flex' }}>
-                    <div className="glass-card text-center mx-auto w-full max-w-sm p-5 bounce-in relative overflow-hidden" style={{ border: '2px solid var(--rose)' }}>
-                        <div className="icon-box bg-rose text-black mx-auto mb-4" style={{ width: '60px', height: '60px', fontSize: '2rem', borderRadius: 0 }}><i className="fas fa-exclamation-triangle"></i></div>
-                        <h3 className="mb-2 text-xl text-white font-bold uppercase">WARNING</h3>
-                        <p className="text-muted mb-4 line-height-relaxed uppercase font-mono text-sm">{confirmDialog.message}</p>
-                        <div className="grid-2 gap-3 mt-4">
-                            <button onClick={() => setConfirmDialog({ isOpen: false, message: "", onConfirm: null })} className="btn-action hover-float text-center">CANCEL</button>   
-                            <button onClick={confirmDialog.onConfirm} className="btn-main bg-rose text-white border-0 hover-float font-mono">CONFIRM</button>
-                        </div>  
+                    <div className="glass-card text-center mx-auto w-full max-w-sm p-5 bounce-in relative overflow-hidden" style={{ border: '2px solid var(--rose)' }}><div className="icon-box bg-rose text-black mx-auto mb-4" style={{ width: '60px', height: '60px', fontSize: '2rem', borderRadius: 0 }}><i className="fas fa-exclamation-triangle"></i></div><h3 className="mb-2 text-xl text-white font-bold uppercase">WARNING</h3><p className="text-muted mb-4 line-height-relaxed uppercase font-mono text-sm">{confirmDialog.message}</p>
+                        <div className="grid-2 gap-3 mt-4"><button onClick={() => setConfirmDialog({ isOpen: false, message: "", onConfirm: null })} className="btn-action hover-float text-center">CANCEL</button><button onClick={confirmDialog.onConfirm} className="btn-main bg-rose text-white border-0 hover-float font-mono">CONFIRM</button></div>  
                     </div>
                 </div>
             )}
 
-            {/* --- MODAL BUDGET SETTINGS --- */}
             {isBudgetModalOpen && (
                 <div className="modal-wrapper" style={{ display: 'flex' }}>
-                    <div className="glass-card mx-auto w-full max-w-lg p-5 bounce-in border-blue">
-                        <div className="d-flex justify-between border-b pb-4 mb-4">
-                            <h3 className="text-white uppercase font-bold"><i className="fas fa-sliders-h text-blue mr-2"></i> PROTOCOL SETTINGS</h3>
-                            <button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setIsBudgetModalOpen(false)}><i className="fas fa-times"></i></button> 
-                        </div>  
-                        <div className="scroll-y mb-4 pr-2" style={{ maxHeight: '40vh' }}>
-                            {budgets.map((b, i) => (
-                                <div key={i} className="d-flex align-center gap-3 mb-2 bg-dark p-2 rounded border" style={{ borderLeft: `4px solid ${b.color}` }}>
-                                    <span className="flex-2 text-white font-bold uppercase text-sm truncate">{b.category}</span>
-                                    <span className="flex-1 font-mono text-blue">{formatRp(b.target)}</span>
-                                    <button onClick={() => handleDeleteBudget(b.category)} className="btn-icon-small text-rose hover-bg-rose border-0 m-0"><i className="fas fa-trash-alt"></i></button>
-                                </div>
-                            ))}
-                        </div>
+                    <div className="glass-card mx-auto w-full max-w-lg p-5 bounce-in border-blue"><div className="d-flex justify-between border-b pb-4 mb-4"><h3 className="text-white uppercase font-bold"><i className="fas fa-sliders-h text-blue mr-2"></i> PROTOCOL SETTINGS</h3><button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setIsBudgetModalOpen(false)}><i className="fas fa-times"></i></button></div>  
+                        <div className="scroll-y mb-4 pr-2" style={{ maxHeight: '40vh' }}>{budgets.map((b, i) => (<div key={i} className="d-flex align-center gap-3 mb-2 bg-dark p-2 rounded border" style={{ borderLeft: `4px solid ${b.color}` }}><span className="flex-2 text-white font-bold uppercase text-sm truncate">{b.category}</span><span className="flex-1 font-mono text-blue">{formatRp(b.target)}</span><button onClick={() => handleDeleteBudget(b.category)} className="btn-icon-small text-rose hover-bg-rose border-0 m-0"><i className="fas fa-trash-alt"></i></button></div>))}</div>
                         <h4 className="text-xs text-blue mb-3 font-bold uppercase letter-spacing-1">INITIALIZE NEW PROTOCOL</h4> 
-                        <div className="d-flex gap-3 mb-4 align-center flex-wrap mobile-grid-1">
-                            <input type="text" value={newBudgetCat} onChange={(e)=>setNewBudgetCat(e.target.value)} placeholder="CATEGORY NAME" className="flex-2 min-w-150 uppercase font-mono p-2 border bg-black text-white" />
-                            <input type="number" value={newBudgetTarget} onChange={(e)=>setNewBudgetTarget(e.target.value)} placeholder="MAX LIMIT (IDR)" className="flex-1 min-w-150 font-bold font-mono p-2 border bg-black text-white" />
-                            <button type="button" onClick={handleAddBudget} className="btn-icon-small border-blue text-blue hover-bg-blue p-3"><i className="fas fa-plus"></i></button>   
-                        </div>
+                        <div className="d-flex gap-3 mb-4 align-center flex-wrap mobile-grid-1"><input type="text" value={newBudgetCat} onChange={(e)=>setNewBudgetCat(e.target.value)} placeholder="CATEGORY NAME" className="flex-2 min-w-150 uppercase font-mono p-2 border bg-black text-white" /><input type="number" value={newBudgetTarget} onChange={(e)=>setNewBudgetTarget(e.target.value)} placeholder="MAX LIMIT (IDR)" className="flex-1 min-w-150 font-bold font-mono p-2 border bg-black text-white" /><button type="button" onClick={handleAddBudget} className="btn-icon-small border-blue text-blue hover-bg-blue p-3"><i className="fas fa-plus"></i></button></div>
                     </div>
                 </div>
             )}
 
-            {/* --- MODAL NEW GOAL --- */}
             {isGoalModalOpen && (
                 <div className="modal-wrapper" style={{ display: 'flex' }}>
-                    <div className="glass-card mx-auto w-full max-w-sm p-5 bounce-in border-yellow">
-                        <div className="d-flex justify-between border-b pb-4 mb-4">
-                            <h3 className="text-white uppercase font-bold"><i className="fas fa-star text-yellow mr-2"></i> NEW OBJECTIVE</h3>
-                            <button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setIsGoalModalOpen(false)}><i className="fas fa-times"></i></button> 
-                        </div>  
-                        <form onSubmit={handleAddGoal}>
-                            <div className="form-group mb-4">
-                                <label>OBJECTIVE ID / NAME</label>
-                                <input type="text" value={newGoalName} onChange={(e)=>setNewGoalName(e.target.value)} required placeholder="INPUT STRING..." className="uppercase font-mono w-full p-2 border bg-black text-white" />
-                            </div>
-                            <div className="form-group mb-5">
-                                <label>TARGET CAPACITY (IDR)</label>
-                                <input type="number" value={newGoalTarget} onChange={(e)=>setNewGoalTarget(e.target.value)} required placeholder="1000000" className="font-bold input-lg font-mono text-yellow w-full p-2 border bg-black" />
-                            </div>
-                            <button type="submit" className="btn-main bg-yellow text-black w-full hover-float font-mono text-lg font-bold"><i className="fas fa-rocket mr-2"></i> INITIATE SEQUENCE</button>
-                        </form>
+                    <div className="glass-card mx-auto w-full max-w-sm p-5 bounce-in border-yellow"><div className="d-flex justify-between border-b pb-4 mb-4"><h3 className="text-white uppercase font-bold"><i className="fas fa-star text-yellow mr-2"></i> NEW OBJECTIVE</h3><button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setIsGoalModalOpen(false)}><i className="fas fa-times"></i></button></div>  
+                        <form onSubmit={handleAddGoal}><div className="form-group mb-4"><label>OBJECTIVE ID / NAME</label><input type="text" value={newGoalName} onChange={(e)=>setNewGoalName(e.target.value)} required placeholder="INPUT STRING..." className="uppercase font-mono w-full p-2 border bg-black text-white" /></div><div className="form-group mb-5"><label>TARGET CAPACITY (IDR)</label><input type="number" value={newGoalTarget} onChange={(e)=>setNewGoalTarget(e.target.value)} required placeholder="1000000" className="font-bold input-lg font-mono text-yellow w-full p-2 border bg-black" /></div><button type="submit" className="btn-main bg-yellow text-black w-full hover-float font-mono text-lg font-bold"><i className="fas fa-rocket mr-2"></i> INITIATE SEQUENCE</button></form>
                     </div>
                 </div>
             )}
-
         </div>
     );
 }

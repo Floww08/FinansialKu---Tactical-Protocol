@@ -19,6 +19,18 @@ const DEFAULT_DATA = {
     portfolios: []
 };
 
+// HELPER FUNGSI UNTUK INPUT ANGKA OTOMATIS TITIK
+const formatRupiahInput = (val) => {
+    if (!val) return "";
+    const numberStr = val.toString().replace(/[^0-9]/g, ""); // Hanya sisakan angka
+    return numberStr.replace(/\B(?=(\d{3})+(?!\d))/g, ".");   // Kasih titik tiap 3 digit
+};
+
+const getNumber = (val) => {
+    if (!val) return 0;
+    return parseFloat(val.toString().replace(/\./g, ""));    // Hapus titik sebelum masuk database
+};
+
 export default function DashboardPage() {
     const [user, setUser] = useState(null);
     const [isDataLoaded, setIsDataLoaded] = useState(false);
@@ -54,6 +66,9 @@ export default function DashboardPage() {
     const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
     const [newGoalName, setNewGoalName] = useState("");
     const [newGoalTarget, setNewGoalTarget] = useState("");
+
+    // Modal Injeksi Dana Pengganti window.prompt
+    const [injectDialog, setInjectDialog] = useState({ isOpen: false, id: null, name: "", amount: "" });
 
     const [isUsernameModalOpen, setIsUsernameModalOpen] = useState(false);
     const [newUsername, setNewUsername] = useState("");
@@ -308,7 +323,6 @@ export default function DashboardPage() {
         }
     };
 
-    // PROSES GAMBAR DIPISAH: isCamera (fisik) vs isFile (digital)
     const handleOpticScan = async (e, isCamera = false) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -319,7 +333,6 @@ export default function DashboardPage() {
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    // Perbesar resolusi 2x lipat agar teks kecil di screenshot terbaca jelas
                     const scale = 2;
                     canvas.width = img.width * scale;
                     canvas.height = img.height * scale;
@@ -331,16 +344,11 @@ export default function DashboardPage() {
                     const data = imageData.data;
 
                     for (let i = 0; i < data.length; i += 4) {
-                        // Ubah ke Grayscale murni
                         const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-                        
                         if (isCamera) {
-                            // Jika difoto dari kamera HP (kertas nota), gunakan efek hitam putih keras
                             const threshold = gray < 130 ? 0 : 255; 
                             data[i] = data[i+1] = data[i+2] = threshold;
                         } else {
-                            // Jika di-upload dari file (screenshot), cukup grayscale. Jangan pakai efek keras
-                            // agar pinggiran font digital tidak rusak.
                             data[i] = data[i+1] = data[i+2] = gray;
                         }
                     }
@@ -361,7 +369,7 @@ export default function DashboardPage() {
 
     const handleAddTransaction = async (e) => {
         e.preventDefault();
-        const amount = parseFloat(txAmount);
+        const amount = getNumber(txAmount); // Ambil angka asli dari input bertitik
         if (amount <= 0 || !txCategory || !txDesc) return;
         const newTx = [{ id: Date.now(), type: activeTab, amount, category: txCategory, description: txDesc, date: txDate }, ...transactions];
         setTransactions(newTx);
@@ -374,9 +382,10 @@ export default function DashboardPage() {
     };
 
     const handleAddBudget = async () => {
-        if (!newBudgetCat || !newBudgetTarget) return;
+        const targetNumber = getNumber(newBudgetTarget);
+        if (!newBudgetCat || !targetNumber) return;
         const colors = ['#00f0ff', '#ff2a2a', '#ff9100', '#10b981', '#bf00ff', '#e0e0e0'];
-        const newB = [...budgets, { category: newBudgetCat, target: parseInt(newBudgetTarget), color: colors[Math.floor(Math.random() * colors.length)] }];
+        const newB = [...budgets, { category: newBudgetCat, target: targetNumber, color: colors[Math.floor(Math.random() * colors.length)] }];
         setBudgets(newB); setNewBudgetCat(""); setNewBudgetTarget(""); await syncDataToFirebase(null, newB, null, null);
     };
 
@@ -385,20 +394,40 @@ export default function DashboardPage() {
     };
 
     const handleAddGoal = async (e) => {
-        e.preventDefault(); const newG = [...goals, { id: Date.now(), name: newGoalName, target: parseFloat(newGoalTarget), saved: 0 }]; setGoals(newG); setNewGoalName(""); setNewGoalTarget(""); setIsGoalModalOpen(false); await syncDataToFirebase(null, null, newG, null);
+        e.preventDefault(); 
+        const targetNumber = getNumber(newGoalTarget);
+        if(targetNumber <= 0) return;
+        const newG = [...goals, { id: Date.now(), name: newGoalName, target: targetNumber, saved: 0 }]; 
+        setGoals(newG); setNewGoalName(""); setNewGoalTarget(""); setIsGoalModalOpen(false); 
+        await syncDataToFirebase(null, null, newG, null);
     };
 
     const handleDeleteGoal = (id) => {
         setConfirmDialog({ isOpen: true, message: "Hapus target ini dari sistem?", onConfirm: async () => { const newG = goals.filter(g => g.id !== id); setGoals(newG); await syncDataToFirebase(null, null, newG, null); setConfirmDialog({ isOpen: false, message: "", onConfirm: null }); } });
     };
 
-    const injectGoalFund = async (id, name) => {
-        const input = window.prompt(`Masukkan jumlah dana injeksi untuk [${name}]:`, "0");
-        if (input) { const val = parseFloat(input); if (val > 0) { const newG = goals.map(g => g.id === id ? { ...g, saved: g.saved + val } : g); setGoals(newG); await syncDataToFirebase(null, null, newG, null); } }
+    const injectGoalFund = (id, name) => {
+        setInjectDialog({ isOpen: true, id, name, amount: "" }); // Gantikan window.prompt
+    };
+
+    const handleInjectSubmit = async (e) => {
+        e.preventDefault();
+        const val = getNumber(injectDialog.amount);
+        if (val > 0) { 
+            const newG = goals.map(g => g.id === injectDialog.id ? { ...g, saved: g.saved + val } : g); 
+            setGoals(newG); 
+            await syncDataToFirebase(null, null, newG, null); 
+        }
+        setInjectDialog({ isOpen: false, id: null, name: "", amount: "" });
     };
 
     const handleAddPortfolio = async (e) => {
-        e.preventDefault(); const newPortos = [...portfolios, { id: Date.now(), type: portoType, symbol: portoSymbol.toUpperCase(), qty: parseFloat(portoQty), buy: parseFloat(portoBuy) }]; setPortfolios(newPortos); setPortoSymbol(""); setPortoQty(""); setPortoBuy(""); await syncDataToFirebase(null, null, null, newPortos);
+        e.preventDefault(); 
+        const buyAmount = getNumber(portoBuy);
+        if(buyAmount < 0) return;
+        const newPortos = [...portfolios, { id: Date.now(), type: portoType, symbol: portoSymbol.toUpperCase(), qty: parseFloat(portoQty), buy: buyAmount }]; 
+        setPortfolios(newPortos); setPortoSymbol(""); setPortoQty(""); setPortoBuy(""); 
+        await syncDataToFirebase(null, null, null, newPortos);
     };
 
     const handleDeletePortfolio = (id) => {
@@ -521,7 +550,10 @@ export default function DashboardPage() {
                                         <button type="button" onClick={() => { setActiveTab("expense"); setTxCategory(budgets[0]?.category || ""); }} className={`tab-btn font-mono font-bold ${activeTab === "expense" ? "active" : ""}`}>DEPLOY (-)</button>
                                     </div>
                                     <form onSubmit={handleAddTransaction} className="flex-col gap-1">
-                                        <div className="form-group"><label>TRANSFER AMOUNT (IDR)</label><input type="number" required placeholder="0" value={txAmount} onChange={(e) => setTxAmount(e.target.value)} className="input-lg font-bold text-white font-mono" /></div>
+                                        <div className="form-group">
+                                            <label>TRANSFER AMOUNT (IDR)</label>
+                                            <input type="text" inputMode="numeric" required placeholder="0" value={txAmount} onChange={(e) => setTxAmount(formatRupiahInput(e.target.value))} className="input-lg font-bold text-white font-mono" />
+                                        </div>
                                         <div className="grid-2 gap-3 mb-3 mt-3 mobile-grid-1">
                                             <div className="form-group">
                                                 <label>CLASS / TYPE</label>
@@ -595,7 +627,7 @@ export default function DashboardPage() {
                                     </div>
                                     <div className="form-group flex-1 min-w-150 m-0"><label>TICKER SYMBOL</label><input type="text" value={portoSymbol} onChange={(e)=>setPortoSymbol(e.target.value)} required placeholder="BTC..." className="uppercase font-bold font-mono" /></div>
                                     <div className="form-group flex-1 min-w-150 m-0"><label>VOLUME / QTY</label><input type="number" step="any" value={portoQty} onChange={(e)=>setPortoQty(e.target.value)} required placeholder="0.00" className="font-bold font-mono" /></div>
-                                    <div className="form-group flex-1 min-w-150 m-0"><label>CAPITAL (IDR)</label><input type="number" value={portoBuy} onChange={(e)=>setPortoBuy(e.target.value)} required placeholder="0" className="font-bold font-mono" /></div>
+                                    <div className="form-group flex-1 min-w-150 m-0"><label>CAPITAL (IDR)</label><input type="text" inputMode="numeric" value={portoBuy} onChange={(e)=>setPortoBuy(formatRupiahInput(e.target.value))} required placeholder="0" className="font-bold font-mono" /></div>
                                     <button type="submit" className="btn-main font-mono text-lg flex-shrink-0 hover-float" style={{ padding: '14px 24px', background: 'var(--blue)', color: '#000', border: 'none' }}>LINK</button>
                                 </form>
                             </div>
@@ -661,7 +693,6 @@ export default function DashboardPage() {
                                 disabled={isOpticScanning}
                             />
                             
-                            {/* Pemisahan proses kamera dan file */}
                             <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={(e) => handleOpticScan(e, false)} />
                             <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} style={{ display: 'none' }} onChange={(e) => handleOpticScan(e, true)} />
 
@@ -720,6 +751,26 @@ export default function DashboardPage() {
                 </div>
             )}
 
+            {/* MODAL INJEKSI DANA (PENGGANTI WINDOW.PROMPT) */}
+            {injectDialog.isOpen && (
+                <div className="modal-wrapper" style={{ display: 'flex' }}>
+                    <div className="glass-card mx-auto w-full max-w-sm p-5 bounce-in border-blue">
+                        <div className="d-flex justify-between border-b pb-4 mb-4">
+                            <h3 className="text-white uppercase font-bold"><i className="fas fa-plus-circle text-blue mr-2"></i> INJECT DANA</h3>
+                            <button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setInjectDialog({ isOpen: false, id: null, name: "", amount: "" })}><i className="fas fa-times"></i></button>
+                        </div>  
+                        <p className="text-xs font-mono text-muted uppercase mb-4">Target: {injectDialog.name}</p>
+                        <form onSubmit={handleInjectSubmit}>
+                            <div className="form-group mb-5">
+                                <label>JUMLAH INJEKSI (IDR)</label>
+                                <input type="text" inputMode="numeric" value={injectDialog.amount} onChange={(e)=>setInjectDialog({ ...injectDialog, amount: formatRupiahInput(e.target.value) })} required placeholder="Misal: 1.500.000" className="font-bold input-lg font-mono text-blue w-full p-2 border bg-black" />
+                            </div>
+                            <button type="submit" className="btn-main bg-gradient-blue text-white w-full hover-float font-mono text-lg font-bold"><i className="fas fa-upload mr-2"></i> INJECT SEKARANG</button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
             {confirmDialog.isOpen && (
                 <div className="modal-wrapper" style={{ display: 'flex' }}>
                     <div className="glass-card text-center mx-auto w-full max-w-sm p-5 bounce-in relative overflow-hidden" style={{ border: '2px solid var(--rose)' }}><div className="icon-box bg-rose text-black mx-auto mb-4" style={{ width: '60px', height: '60px', fontSize: '2rem', borderRadius: 0 }}><i className="fas fa-exclamation-triangle"></i></div><h3 className="mb-2 text-xl text-white font-bold uppercase">WARNING</h3><p className="text-muted mb-4 line-height-relaxed uppercase font-mono text-sm">{confirmDialog.message}</p>
@@ -733,7 +784,7 @@ export default function DashboardPage() {
                     <div className="glass-card mx-auto w-full max-w-lg p-5 bounce-in border-blue"><div className="d-flex justify-between border-b pb-4 mb-4"><h3 className="text-white uppercase font-bold"><i className="fas fa-sliders-h text-blue mr-2"></i> PROTOCOL SETTINGS</h3><button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setIsBudgetModalOpen(false)}><i className="fas fa-times"></i></button></div>  
                         <div className="scroll-y mb-4 pr-2" style={{ maxHeight: '40vh' }}>{budgets.map((b, i) => (<div key={i} className="d-flex align-center gap-3 mb-2 bg-dark p-2 rounded border" style={{ borderLeft: `4px solid ${b.color}` }}><span className="flex-2 text-white font-bold uppercase text-sm truncate">{b.category}</span><span className="flex-1 font-mono text-blue">{formatRp(b.target)}</span><button onClick={() => handleDeleteBudget(b.category)} className="btn-icon-small text-rose hover-bg-rose border-0 m-0"><i className="fas fa-trash-alt"></i></button></div>))}</div>
                         <h4 className="text-xs text-blue mb-3 font-bold uppercase letter-spacing-1">INITIALIZE NEW PROTOCOL</h4> 
-                        <div className="d-flex gap-3 mb-4 align-center flex-wrap mobile-grid-1"><input type="text" value={newBudgetCat} onChange={(e)=>setNewBudgetCat(e.target.value)} placeholder="CATEGORY NAME" className="flex-2 min-w-150 uppercase font-mono p-2 border bg-black text-white" /><input type="number" value={newBudgetTarget} onChange={(e)=>setNewBudgetTarget(e.target.value)} placeholder="MAX LIMIT (IDR)" className="flex-1 min-w-150 font-bold font-mono p-2 border bg-black text-white" /><button type="button" onClick={handleAddBudget} className="btn-icon-small border-blue text-blue hover-bg-blue p-3"><i className="fas fa-plus"></i></button></div>
+                        <div className="d-flex gap-3 mb-4 align-center flex-wrap mobile-grid-1"><input type="text" value={newBudgetCat} onChange={(e)=>setNewBudgetCat(e.target.value)} placeholder="CATEGORY NAME" className="flex-2 min-w-150 uppercase font-mono p-2 border bg-black text-white" /><input type="text" inputMode="numeric" value={newBudgetTarget} onChange={(e)=>setNewBudgetTarget(formatRupiahInput(e.target.value))} placeholder="MAX LIMIT (IDR)" className="flex-1 min-w-150 font-bold font-mono p-2 border bg-black text-white" /><button type="button" onClick={handleAddBudget} className="btn-icon-small border-blue text-blue hover-bg-blue p-3"><i className="fas fa-plus"></i></button></div>
                     </div>
                 </div>
             )}
@@ -741,7 +792,11 @@ export default function DashboardPage() {
             {isGoalModalOpen && (
                 <div className="modal-wrapper" style={{ display: 'flex' }}>
                     <div className="glass-card mx-auto w-full max-w-sm p-5 bounce-in border-yellow"><div className="d-flex justify-between border-b pb-4 mb-4"><h3 className="text-white uppercase font-bold"><i className="fas fa-star text-yellow mr-2"></i> NEW OBJECTIVE</h3><button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setIsGoalModalOpen(false)}><i className="fas fa-times"></i></button></div>  
-                        <form onSubmit={handleAddGoal}><div className="form-group mb-4"><label>OBJECTIVE ID / NAME</label><input type="text" value={newGoalName} onChange={(e)=>setNewGoalName(e.target.value)} required placeholder="INPUT STRING..." className="uppercase font-mono w-full p-2 border bg-black text-white" /></div><div className="form-group mb-5"><label>TARGET CAPACITY (IDR)</label><input type="number" value={newGoalTarget} onChange={(e)=>setNewGoalTarget(e.target.value)} required placeholder="1000000" className="font-bold input-lg font-mono text-yellow w-full p-2 border bg-black" /></div><button type="submit" className="btn-main bg-yellow text-black w-full hover-float font-mono text-lg font-bold"><i className="fas fa-rocket mr-2"></i> INITIATE SEQUENCE</button></form>
+                        <form onSubmit={handleAddGoal}>
+                            <div className="form-group mb-4"><label>OBJECTIVE ID / NAME</label><input type="text" value={newGoalName} onChange={(e)=>setNewGoalName(e.target.value)} required placeholder="INPUT STRING..." className="uppercase font-mono w-full p-2 border bg-black text-white" /></div>
+                            <div className="form-group mb-5"><label>TARGET CAPACITY (IDR)</label><input type="text" inputMode="numeric" value={newGoalTarget} onChange={(e)=>setNewGoalTarget(formatRupiahInput(e.target.value))} required placeholder="1.000.000" className="font-bold input-lg font-mono text-yellow w-full p-2 border bg-black" /></div>
+                            <button type="submit" className="btn-main bg-yellow text-black w-full hover-float font-mono text-lg font-bold"><i className="fas fa-rocket mr-2"></i> INITIATE SEQUENCE</button>
+                        </form>
                     </div>
                 </div>
             )}

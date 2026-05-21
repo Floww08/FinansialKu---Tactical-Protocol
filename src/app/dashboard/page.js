@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import { auth, db } from "@/lib/firebase"; 
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged, signOut, updateProfile } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import Chart from 'chart.js/auto';
 import Tesseract from 'tesseract.js';
@@ -45,6 +45,7 @@ export default function DashboardPage() {
     const [aiInput, setAiInput] = useState("");
     const [isOpticScanning, setIsOpticScanning] = useState(false);
     const fileInputRef = useRef(null);
+    const cameraInputRef = useRef(null);
     
     const [isBudgetModalOpen, setIsBudgetModalOpen] = useState(false);
     const [newBudgetCat, setNewBudgetCat] = useState("");
@@ -53,6 +54,9 @@ export default function DashboardPage() {
     const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
     const [newGoalName, setNewGoalName] = useState("");
     const [newGoalTarget, setNewGoalTarget] = useState("");
+
+    const [isUsernameModalOpen, setIsUsernameModalOpen] = useState(false);
+    const [newUsername, setNewUsername] = useState("");
 
     const [portoType, setPortoType] = useState("crypto");
     const [portoSymbol, setPortoSymbol] = useState("");
@@ -106,6 +110,18 @@ export default function DashboardPage() {
             portfolios: newPortos || portfolios
         };
         await setDoc(doc(db, "users", user.uid), payload);
+    };
+
+    const handleUpdateUsername = async (e) => {
+        e.preventDefault();
+        if (!newUsername.trim()) return;
+        try {
+            await updateProfile(auth.currentUser, { displayName: newUsername });
+            setUser({ ...auth.currentUser, displayName: newUsername });
+            setIsUsernameModalOpen(false);
+        } catch (error) {
+            alert("Gagal memperbarui username.");
+        }
     };
 
     useEffect(() => {
@@ -186,10 +202,7 @@ export default function DashboardPage() {
 
             budgetChartInstance.current = new Chart(budgetChartRef.current, {
                 type: 'doughnut',
-                data: { 
-                    labels: activeBudgets.map(b => b.category), 
-                    datasets: [{ data: activeBudgets.map(b => b.used), backgroundColor: activeBudgets.map(b => b.color), borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5 }] 
-                },
+                data: { labels: activeBudgets.map(b => b.category), datasets: [{ data: activeBudgets.map(b => b.used), backgroundColor: activeBudgets.map(b => b.color), borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5 }] },
                 options: { responsive: true, maintainAspectRatio: false, cutout: '75%', plugins: { legend: { position: 'right', labels: { color: '#8b949e', usePointStyle: true, padding: 15, font: { family: "'Plus Jakarta Sans'", size: 11, weight: 'bold' } } } } }
             });
         }
@@ -201,10 +214,7 @@ export default function DashboardPage() {
             if (assetChartInstance.current) assetChartInstance.current.destroy();
             assetChartInstance.current = new Chart(assetChartRef.current, {
                 type: 'pie',
-                data: { 
-                    labels: ['Aset Kripto', 'Aset Saham'], 
-                    datasets: [{ data: [allocCrypto, allocSaham], backgroundColor: ['#ff9100', '#00f0ff'], borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5 }] 
-                },
+                data: { labels: ['Aset Kripto', 'Aset Saham'], datasets: [{ data: [allocCrypto, allocSaham], backgroundColor: ['#ff9100', '#00f0ff'], borderWidth: 2, borderColor: '#0b0c10', hoverOffset: 5 }] },
                 options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { usePointStyle: true, padding: 10, color: '#8b949e', font: { weight: 'bold', size: 10, family: "'Plus Jakarta Sans'" } } } } }
             });
         }
@@ -262,11 +272,11 @@ export default function DashboardPage() {
     };
 
     const handleAIProcessing = async (e) => {
-        e.preventDefault();
+        if (e) e.preventDefault();
         if (!aiInput) return;
         
         const extracted = extractTransactionData(aiInput);
-        if (extracted.amount <= 0) return alert('Gagal membaca nominal angka. Coba tulis lebih jelas.');
+        if (extracted.amount <= 0) return alert('Gagal membaca nominal angka. Coba ketik lebih jelas.');
 
         let desc = aiInput.length > 30 ? aiInput.substring(0, 30) + '...' : aiInput;
         desc = '[AI] ' + desc.replace(/\n/g, ' ');
@@ -277,13 +287,48 @@ export default function DashboardPage() {
         await syncDataToFirebase(newTx, null, null, null);
     };
 
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleAIProcessing(e);
+        }
+    };
+
+    // FUNGSI PREPROCESSING GAMBAR SEBELUM DIBACA AI
     const handleOpticScan = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
 
         setIsOpticScanning(true);
         try {
-            const result = await Tesseract.recognize(file, 'ind+eng');
+            // Ubah gambar ke Canvas untuk meningkatkan kontras (Binarization)
+            const processedImageURL = await new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const data = imageData.data;
+
+                    // Mengubah gambar jadi hitam putih kontras tinggi
+                    for (let i = 0; i < data.length; i += 4) {
+                        const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+                        const threshold = avg < 130 ? 0 : 255; // 130 adalah batas abu-abu
+                        data[i] = threshold;     // Red
+                        data[i + 1] = threshold; // Green
+                        data[i + 2] = threshold; // Blue
+                    }
+                    ctx.putImageData(imageData, 0, 0);
+                    resolve(canvas.toDataURL('image/png'));
+                };
+                img.src = URL.createObjectURL(file);
+            });
+
+            const result = await Tesseract.recognize(processedImageURL, 'ind+eng');
             setAiInput(result.data.text.trim()); 
         } catch (error) {
             alert("Scanner gagal membaca gambar.");
@@ -318,10 +363,7 @@ export default function DashboardPage() {
     };
 
     const handleAddGoal = async (e) => {
-        e.preventDefault(); 
-        const newG = [...goals, { id: Date.now(), name: newGoalName, target: parseFloat(newGoalTarget), saved: 0 }]; 
-        setGoals(newG); setNewGoalName(""); setNewGoalTarget(""); setIsGoalModalOpen(false); 
-        await syncDataToFirebase(null, null, newG, null);
+        e.preventDefault(); const newG = [...goals, { id: Date.now(), name: newGoalName, target: parseFloat(newGoalTarget), saved: 0 }]; setGoals(newG); setNewGoalName(""); setNewGoalTarget(""); setIsGoalModalOpen(false); await syncDataToFirebase(null, null, newG, null);
     };
 
     const handleDeleteGoal = (id) => {
@@ -330,21 +372,11 @@ export default function DashboardPage() {
 
     const injectGoalFund = async (id, name) => {
         const input = window.prompt(`Masukkan jumlah dana injeksi untuk [${name}]:`, "0");
-        if (input) { 
-            const val = parseFloat(input); 
-            if (val > 0) { 
-                const newG = goals.map(g => g.id === id ? { ...g, saved: g.saved + val } : g); 
-                setGoals(newG); 
-                await syncDataToFirebase(null, null, newG, null); 
-            } 
-        }
+        if (input) { const val = parseFloat(input); if (val > 0) { const newG = goals.map(g => g.id === id ? { ...g, saved: g.saved + val } : g); setGoals(newG); await syncDataToFirebase(null, null, newG, null); } }
     };
 
     const handleAddPortfolio = async (e) => {
-        e.preventDefault(); 
-        const newPortos = [...portfolios, { id: Date.now(), type: portoType, symbol: portoSymbol.toUpperCase(), qty: parseFloat(portoQty), buy: parseFloat(portoBuy) }]; 
-        setPortfolios(newPortos); setPortoSymbol(""); setPortoQty(""); setPortoBuy(""); 
-        await syncDataToFirebase(null, null, null, newPortos);
+        e.preventDefault(); const newPortos = [...portfolios, { id: Date.now(), type: portoType, symbol: portoSymbol.toUpperCase(), qty: parseFloat(portoQty), buy: parseFloat(portoBuy) }]; setPortfolios(newPortos); setPortoSymbol(""); setPortoQty(""); setPortoBuy(""); await syncDataToFirebase(null, null, null, newPortos);
     };
 
     const handleDeletePortfolio = (id) => {
@@ -411,7 +443,12 @@ export default function DashboardPage() {
                         <div className="d-flex align-center gap-3">
                             <button className="btn-icon-round bg-glass text-blue mobile-only hover-float" onClick={() => setIsSidebarOpen(true)}><i className="fas fa-bars"></i></button>
                             <div className="text-container">
-                                <h2 className="mb-1 text-white uppercase font-bold text-xl">User: {user.displayName || user.email.split('@')[0]}</h2>
+                                <h2 className="mb-1 text-white uppercase font-bold text-xl d-flex align-center gap-2">
+                                    User: {user.displayName || user.email.split('@')[0]}
+                                    <button onClick={() => { setNewUsername(user.displayName || ""); setIsUsernameModalOpen(true); }} className="btn-icon-small text-blue border-0 hover-bg-blue" style={{ width: '24px', height: '24px', fontSize: '12px' }}>
+                                        <i className="fas fa-pen"></i>
+                                    </button>
+                                </h2>
                                 <p className="text-blue text-sm font-mono uppercase font-bold">&gt; UID: {user.uid.slice(0,8)}...</p>
                             </div>
                         </div>
@@ -547,10 +584,21 @@ export default function DashboardPage() {
                                         const val = currentPrice * a.qty;
                                         const profit = val - a.buy;
                                         const pct = a.buy > 0 ? ((profit / a.buy) * 100).toFixed(2) : 0;
+                                        
+                                        // PISAHKAN LOGIKA WARNA DARI JSX AGAR TIDAK ERROR BUILD
+                                        const isProfit = profit >= 0;
+                                        const badgeBg = isProfit ? 'rgba(0, 240, 255, 0.1)' : 'rgba(255, 42, 42, 0.1)';
+                                        const badgeColor = isProfit ? 'var(--blue)' : 'var(--rose)';
+                                        const badgeText = isProfit ? `+${pct}%` : `${pct}%`;
+                                        const profitColorClass = isProfit ? 'text-blue' : 'text-rose';
+                                        const borderClass = isProfit ? 'var(--blue)' : 'var(--rose)';
+
                                         return (
-                                            <li key={a.id || i} style={{ borderLeft: `3px solid ${profit >= 0 ? 'var(--blue)' : 'var(--rose)'}` }}>
+                                            <li key={a.id || i} style={{ borderLeft: `3px solid ${borderClass}` }}>
                                                 <div className="d-flex align-center">
-                                                    <div className="icon-box bg-glass mr-3"><i className={`${a.type === "crypto" ? "fab fa-bitcoin text-yellow" : "fas fa-building text-blue"}`}></i></div>
+                                                    <div className="icon-box bg-glass mr-3">
+                                                        <i className={`${a.type === "crypto" ? "fab fa-bitcoin text-yellow" : "fas fa-building text-blue"}`}></i>
+                                                    </div>
                                                     <div>
                                                         <h4 className="mb-1 tx-title font-bold uppercase">{a.symbol} <span className="text-muted text-sm ml-1 font-mono">[QTY: {a.qty}]</span></h4>
                                                         <span className="text-muted text-xs font-mono uppercase">Modal: {formatRp(a.buy)}</span>
@@ -558,8 +606,8 @@ export default function DashboardPage() {
                                                 </div>
                                                 <div className="text-right d-flex align-center">
                                                     <div className="mr-2 text-right">
-                                                        <h3 className={`font-mono mb-1 font-bold ${profit >= 0 ? 'text-blue' : 'text-rose'}`}>{formatRp(val)}</h3>
-                                                        <span className="badge font-bold" style={{ background: profit >= 0 ? 'rgba(0, 240, 255, 0.1)' : 'rgba(255, 42, 42, 0.1)', color: profit >= 0 ? 'var(--blue)' : 'var(--rose)' }}>{profit >= 0 ? '+' : ''}{pct}%</span>
+                                                        <h3 className={`font-mono mb-1 font-bold ${profitColorClass}`}>{formatRp(val)}</h3>
+                                                        <span className="badge font-bold" style={{ background: badgeBg, color: badgeColor }}>{badgeText}</span>
                                                     </div> 
                                                     <button onClick={() => handleDeletePortfolio(a.id)} className="btn-icon-small border-0 hover-bg-rose ml-2 text-muted"><i className="fas fa-trash"></i></button>
                                                 </div>
@@ -578,27 +626,32 @@ export default function DashboardPage() {
                     <div className="intel-section mb-4 mt-2">
                         <div className="d-flex align-center gap-3 mb-4">
                             <div className="icon-box border-blue text-blue blink-text"><i className="fas fa-network-wired"></i></div>
-                            <h3 className="title-md text-white m-0">TACTICAL NLP & OCR</h3>
+                            <h3 className="title-md text-white m-0">NLP & OCR ENGINE</h3>
                         </div>
                         
                         <form onSubmit={handleAIProcessing} className="flex-col gap-3">
                             <textarea 
                                 value={aiInput} 
                                 onChange={(e) => setAiInput(e.target.value)} 
-                                placeholder={isOpticScanning ? ">> SCANNING IN PROGRESS..." : ">> Ketik log 'Jual emas 500k' atau upload struk..."} 
+                                onKeyDown={handleKeyDown}
+                                placeholder={isOpticScanning ? ">> SCANNING IN PROGRESS..." : ">> Ketik log lalu Enter..."} 
                                 className="w-full font-mono bg-black text-white p-3 border border-gray-700 rounded"
                                 rows="3"
                                 disabled={isOpticScanning}
                             />
                             
                             <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleOpticScan} />
+                            <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} style={{ display: 'none' }} onChange={handleOpticScan} />
 
                             <div className="d-flex gap-2">
-                                <button type="button" onClick={() => fileInputRef.current.click()} disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase border border-yellow text-yellow hover-bg-yellow">
-                                    {isOpticScanning ? <i className="fas fa-circle-notch fa-spin mb-1"></i> : <i className="fas fa-camera mb-1"></i>}<br /><span className="text-xs">{isOpticScanning ? 'SCANNING...' : 'OPTIC SCAN'}</span>
+                                <button type="button" onClick={() => fileInputRef.current.click()} disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase border border-yellow text-yellow hover-bg-yellow" style={{ padding: '8px' }}>
+                                    {isOpticScanning ? <i className="fas fa-circle-notch fa-spin"></i> : <i className="fas fa-image"></i>}<br /><span className="text-xs">FILE</span>
                                 </button>
-                                <button type="submit" disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase bg-gradient-blue text-white font-bold border-0">
-                                    <i className="fas fa-paper-plane mb-1"></i><br /><span className="text-xs">PROCESS NLP</span>
+                                <button type="button" onClick={() => cameraInputRef.current.click()} disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase border border-yellow text-yellow hover-bg-yellow" style={{ padding: '8px' }}>
+                                    {isOpticScanning ? <i className="fas fa-circle-notch fa-spin"></i> : <i className="fas fa-camera"></i>}<br /><span className="text-xs">CAM</span>
+                                </button>
+                                <button type="submit" disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase bg-gradient-blue text-white font-bold border-0" style={{ padding: '8px' }}>
+                                    <i className="fas fa-paper-plane"></i><br /><span className="text-xs">SEND</span>
                                 </button>
                             </div>
                         </form>
@@ -625,6 +678,25 @@ export default function DashboardPage() {
             </div>
             
             <button className="mobile-fab" onClick={() => setIsIntelOpen(true)}><i className="fas fa-network-wired text-xl text-black"></i></button>
+
+            {/* MODAL USERNAME */}
+            {isUsernameModalOpen && (
+                <div className="modal-wrapper" style={{ display: 'flex' }}>
+                    <div className="glass-card mx-auto w-full max-w-sm p-5 bounce-in border-blue">
+                        <div className="d-flex justify-between border-b pb-4 mb-4">
+                            <h3 className="text-white uppercase font-bold"><i className="fas fa-user-edit text-blue mr-2"></i> EDIT USERNAME</h3>
+                            <button className="btn-icon-small text-rose border-rose hover-bg-rose" onClick={() => setIsUsernameModalOpen(false)}><i className="fas fa-times"></i></button>
+                        </div>
+                        <form onSubmit={handleUpdateUsername}>
+                            <div className="form-group mb-5">
+                                <label>NEW DISPLAY NAME</label>
+                                <input type="text" value={newUsername} onChange={(e)=>setNewUsername(e.target.value)} required placeholder="Ketik nama baru..." className="uppercase font-mono w-full p-2 border bg-black text-white" />
+                            </div>
+                            <button type="submit" className="btn-main bg-gradient-blue text-white w-full hover-float font-mono text-lg font-bold">SAVE CHAGES</button>
+                        </form>
+                    </div>
+                </div>
+            )}
 
             {confirmDialog.isOpen && (
                 <div className="modal-wrapper" style={{ display: 'flex' }}>

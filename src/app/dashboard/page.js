@@ -221,7 +221,6 @@ export default function DashboardPage() {
         return () => { if (assetChartInstance.current) assetChartInstance.current.destroy(); }
     }, [allocCrypto, allocSaham, activeView, isDataLoaded]);
 
-    // NLP OCR TERBARU (ANTI-GOBLOK)
     const extractTransactionData = (rawText) => {
         let amount = 0;
         let type = "expense";
@@ -229,35 +228,28 @@ export default function DashboardPage() {
 
         const cleanText = rawText.toLowerCase().replace(/rp\s?/g, '').replace(/,/g, '.');
 
-        // 1. Deteksi apakah ini dari nota belanja
         const isReceipt = /total|tunai|kembali|struk|nota|kasir|pajak|change|cash/i.test(cleanText);
 
-        // Kumpulkan semua angka logis (minimal ribuan)
         const allNumbers = [...cleanText.matchAll(/(?<!\d)(\d{1,3}(?:\.\d{3})+)(?!\d)|(?<!\d)(\d{4,})(?!\d)/g)]
             .map(m => parseInt((m[1] || m[2]).replace(/\./g, '')))
             .filter(n => !isNaN(n) && n > 0);
 
         if (isReceipt) {
-            type = 'expense'; // Jika nota, PAKSA JADI PENGELUARAN (-)
-
-            // Strategi A: Cari pola "Total xxxxx"
+            type = 'expense'; 
             const totalMatch = cleanText.match(/(?:total|jumlah|grand total|subtotal)[\s\S]{0,20}?(\d{1,3}(?:\.\d{3})+|\d{4,})/i);
             
             if (totalMatch) {
                 amount = parseInt(totalMatch[1].replace(/\./g, ''));
             } 
-            // Strategi B: Jika kata "Total" buram/tidak terbaca OCR
             else if (allNumbers.length > 0) {
                 const sorted = allNumbers.sort((a,b) => b-a);
-                // Angka paling besar biasanya uang kembalian bayar (misal bayar 100rb, total 75rb)
                 if (cleanText.includes('kembali') && sorted.length >= 2) {
-                    amount = sorted[1]; // Ambil angka terbesar kedua
+                    amount = sorted[1]; 
                 } else {
-                    amount = sorted[0]; // Ambil yang paling besar
+                    amount = sorted[0]; 
                 }
             }
         } else {
-            // 2. Logika ketik manual
             const regexJt = /(?<!\d)(\d+(?:\.\d+)?)\s*(jt|juta|m)\b/i;  
             const regexK = /(?<!\d)(\d+(?:\.\d+)?)\s*(k|rb|ribu)\b/i;   
 
@@ -266,17 +258,15 @@ export default function DashboardPage() {
             } else if (regexK.test(cleanText)) {
                 amount = parseFloat(cleanText.match(regexK)[1]) * 1000;
             } else if (allNumbers.length > 0) {
-                amount = allNumbers[0]; // Ambil angka pertama aja
+                amount = allNumbers[0]; 
             }
 
-            // Cek pemasukan
             const isIncome = /gaji|masuk|terima|profit|cair|topup|dapat|saku|jual|tarik/i.test(cleanText);
             if (isIncome && !/bayar|beli|keluar|potong/i.test(cleanText)) {
                 type = 'income';
             }
         }
 
-        // 3. Kategorisasi cerdas
         if (type === 'income') {
             if (/emas|crypto|saham|aset|bitcoin|btc/i.test(cleanText)) cat = "Pencairan Aset";
             else cat = incomeCategories[0] || "Lain-lain";
@@ -318,8 +308,8 @@ export default function DashboardPage() {
         }
     };
 
-    // Preprocessing Gambar
-    const handleOpticScan = async (e) => {
+    // PROSES GAMBAR DIPISAH: isCamera (fisik) vs isFile (digital)
+    const handleOpticScan = async (e, isCamera = false) => {
         const file = e.target.files[0];
         if (!file) return;
 
@@ -329,20 +319,30 @@ export default function DashboardPage() {
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    canvas.width = img.width;
-                    canvas.height = img.height;
+                    // Perbesar resolusi 2x lipat agar teks kecil di screenshot terbaca jelas
+                    const scale = 2;
+                    canvas.width = img.width * scale;
+                    canvas.height = img.height * scale;
                     const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0);
+                    
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
                     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const data = imageData.data;
 
                     for (let i = 0; i < data.length; i += 4) {
-                        const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-                        const threshold = avg < 130 ? 0 : 255; 
-                        data[i] = threshold;     
-                        data[i + 1] = threshold; 
-                        data[i + 2] = threshold; 
+                        // Ubah ke Grayscale murni
+                        const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                        
+                        if (isCamera) {
+                            // Jika difoto dari kamera HP (kertas nota), gunakan efek hitam putih keras
+                            const threshold = gray < 130 ? 0 : 255; 
+                            data[i] = data[i+1] = data[i+2] = threshold;
+                        } else {
+                            // Jika di-upload dari file (screenshot), cukup grayscale. Jangan pakai efek keras
+                            // agar pinggiran font digital tidak rusak.
+                            data[i] = data[i+1] = data[i+2] = gray;
+                        }
                     }
                     ctx.putImageData(imageData, 0, 0);
                     resolve(canvas.toDataURL('image/png'));
@@ -661,8 +661,9 @@ export default function DashboardPage() {
                                 disabled={isOpticScanning}
                             />
                             
-                            <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleOpticScan} />
-                            <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} style={{ display: 'none' }} onChange={handleOpticScan} />
+                            {/* Pemisahan proses kamera dan file */}
+                            <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={(e) => handleOpticScan(e, false)} />
+                            <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} style={{ display: 'none' }} onChange={(e) => handleOpticScan(e, true)} />
 
                             <div className="d-flex gap-2">
                                 <button type="button" onClick={() => fileInputRef.current.click()} disabled={isOpticScanning} className="btn-action text-center m-0 flex-1 hover-float uppercase border border-yellow text-yellow hover-bg-yellow" style={{ padding: '8px' }}>
